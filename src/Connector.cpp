@@ -1088,10 +1088,10 @@ bool Connector::Connector_SCP_Pipe_Back_and_Valve(double t_target,
 	// (1) alpha=p+ro*a*v
 	// (2) ro*Apipe*v=valve_mass_flow
 
-//cout<<endl<<"p_downstream:"<<p_downstream;
-//cout<<endl<<"rho         :"<<rho;
-//cout<<endl<<"a           :"<<a;
-//cin.get();
+	//cout<<endl<<"p_downstream:"<<p_downstream;
+	//cout<<endl<<"rho         :"<<rho;
+	//cout<<endl<<"a           :"<<a;
+	//cin.get();
 
 	if (DEBUG)
 		cout << endl << endl << "Connector::Connector_SCP_Pipe_Back_and_Valve: entering DEBUG mode" << endl;
@@ -1152,6 +1152,149 @@ bool Connector::Connector_SCP_Pipe_Back_and_Valve(double t_target,
 	return update_OK;
 }
 
+bool Connector::Connector_SCP_Pipe_Back_Pipe_Front_and_Valve(double t_target,
+                                                             SCP *ph, SCP *pt, Valve *v1, double p_downstream,
+                                                             double rho, double a,
+                                                             double &p) {
+	// Solve the following system for p,T,rho,v:
+	// (1) alpha=p+ro*a*v
+	// (2) beta =p-ro*a*v
+	// (3) ro*Apipe*v=valve_mass_flow
+
+	if (DEBUG)
+		cout << endl << endl << "Connector::Connector_SCP_Pipe_Back_Pipe_Front_and_Valve: entering DEBUG mode" << endl;
+
+	bool update_OK = true;
+
+	double f, f1, df, dp;
+	double Apipe_t = ph->Get_dprop("A"); // tail pipe
+	double Apipe_h = pt->Get_dprop("A"); // head pipe
+	double x = v1->Get_dprop("x");
+	double alpha = pt->GetAlphaPrimitiveAtEnd(t_target);
+	double beta = ph->GetBetaPrimitiveAtFront(t_target);
+
+	double err1, err2, err = 1.e5, mp, TOL = 10., pnew;
+	int iter = 0, MAX_ITER = 100;
+	double RELAX = 0.8;
+	while ((fabs(err) > TOL) && (iter <= MAX_ITER)) {
+		// 1. sol
+		// mp  = v1->Get_MassFlowRate_InCompressible(p, p_downstream, rho, x);
+		// mph   = v_h * rho * Apipe_h;
+		// mpt   = v_t * rho * Apipe_t;
+		// p   = alpha - rho * a * v_t = alpha - mpt*a/Apipe_t;
+		// p   = beta  + rho * a * v_h = beta  + mph*a/Apipe_h;
+		// mpt=mp+mph
+		// Hence:
+		// (alpha-p)*Apipe_t/a = mp + (p-beta)*Apipe_h/a
+
+		mp = v1->Get_MassFlowRate(p, 293., p_downstream, 293., x);
+		f = (alpha - p) * Apipe_t / a - (mp + (p - beta) * Apipe_h / a);
+
+		dp = 0.01 * p;
+		if (fabs(dp) < 10.)
+			dp = 10.;
+
+		mp = v1->Get_MassFlowRate(p + dp, 293., p_downstream, 293., x);
+		f1 = (alpha - (p + dp)) * Apipe_t / a - (mp + ((p + dp) - beta) * Apipe_h / a);
+		df = (f1 - f) / dp;
+
+		pnew = p - f / df;
+		p = RELAX * pnew + (1 - RELAX) * p;
+
+		err1 = f;
+		err2 = 0.;
+		double mp_h = (p - beta) * Apipe_h / a;
+		double mp_t = (alpha - p) * Apipe_t / a;
+		if (DEBUG)
+			printf("\n\t mp=%5.3e, x=%5.3e, sum(mp)=%5.3e, f=%5.3e, f1=%5.3e, puj=%5.3e", mp, x, mp_t - mp - mp_h, f,
+			       f1, p / 1e5);
+
+		err = sqrt(err1 * err1 + err2 * err2);
+
+		iter++;
+		if (iter == MAX_ITER) {
+			cout << endl << "!!!ERROR!!! Connector_SCP_Pipe_Back_Pipe_Front_and_Valve() -> MAX_ITER reached, exiting";
+			printf("\n (back) iter #%2d: alpha=%5.3e, p=%5.3e, mp=%5.3e, err1=%+5.3e, err2=%+5.3e",
+			       iter, alpha, p, mp, err1, err2);
+			update_OK = false;
+		}
+	}
+
+	return update_OK;
+}
+
+bool Connector::Connector_SCP_Pipe_Back_Pipe_Back_and_Valve(double t_target,
+                                                            SCP *p1, SCP *p2, Valve *v1, double p_downstream,
+                                                            double rho, double a,
+                                                            double &p) {
+	// Solve the following system for p,T,rho,v:
+	// (1) alpha1=p+ro*a*v1
+	// (2) alpha2=p+ro*a*v2
+	// (3) ro*Apipe*v=valve_mass_flow
+
+	if (DEBUG)
+		cout << endl << endl << "Connector::Connector_SCP_Pipe_Back_Pipe_Back_and_Valve: entering DEBUG mode" << endl;
+
+	bool update_OK = true;
+
+	double f, f1, df, dp;
+	double Apipe_1 = p1->Get_dprop("A"); // tail pipe
+	double Apipe_2 = p2->Get_dprop("A"); // head pipe
+	double x = v1->Get_dprop("x");
+	double alpha1 = p1->GetAlphaPrimitiveAtEnd(t_target);
+	double alpha2 = p2->GetAlphaPrimitiveAtEnd(t_target);
+
+	double err1, err2, err = 1.e5, mp, TOL = 1.e-4, pnew;
+	int iter = 0, MAX_ITER = 100;
+	double RELAX = 0.8;
+	while ((fabs(err) > TOL) && (iter <= MAX_ITER)) {
+		// 1. sol
+		// mp  = v1->Get_MassFlowRate_InCompressible(p, p_downstream, rho, x);
+		// mp1   = v1 * rho * Apipe_1;
+		// mp2   = v2 * rho * Apipe_2;
+		// p   = alpha1 - rho * a * v_1 = alpha - mp1*a/Apipe_1;
+		// p   = alpha2 - rho * a * v_2 = alpha - mp2*a/Apipe_2;
+		// mp1+mp2=mp
+		// Hence:
+		// (alpha1-p)*Apipe_1/a+(alpha2-p)*Apipe_2/a = mp
+
+		mp = v1->Get_MassFlowRate(p, 293., p_downstream, 293., x);
+		f = (alpha1 - p) * Apipe_1 / a + (alpha2 - p) * Apipe_2 / a - mp;
+
+		dp = 0.01 * p;
+		if (fabs(dp) < 10.)
+			dp = 10.;
+
+		mp = v1->Get_MassFlowRate(p + dp, 293., p_downstream, 293., x);
+		f1 = (alpha1 - (p + dp)) * Apipe_1 / a + (alpha2 - (p + dp)) * Apipe_2 / a - mp;
+		df = (f1 - f) / dp;
+
+		pnew = p - f / df;
+		p = RELAX * pnew + (1 - RELAX) * p;
+
+		err1 = f;
+		err2 = 0.;
+		double mp_1 = (alpha1 - p) * Apipe_1 / a;
+		double mp_2 = (alpha2 - p) * Apipe_2 / a;
+		if (DEBUG)
+			printf("\n\t mp=%+5.3e, x=%+5.3e, mp1=%+5.3e, mp2=%+5.3e, f=%+5.3e, puj=%+5.3f bar", mp, x, mp_1, mp_2, f,
+			       p / 1e5);
+
+		err = sqrt(err1 * err1 + err2 * err2);
+
+		iter++;
+		if (iter == MAX_ITER) {
+			cout << endl << "!!!ERROR!!! Connector_SCP_Pipe_Back_Pipe_Back_and_Valve() -> MAX_ITER reached, exiting";
+			printf("\n (back) iter #%2d: alpha=%5.3e, p=%5.3e, mp=%5.3e, err1=%+5.3e, err2=%+5.3e",
+			       iter, alpha1, p, mp, err1, err2);
+			update_OK = false;
+		}
+	}
+
+	return update_OK;
+}
+
+
 bool Connector::Connector_SCP_Pipe_Front_and_Valve_Outlet(double t_target,
                                                           SCP *p1, Valve *v1, double p_upstream, double rho,
                                                           double a,
@@ -1161,7 +1304,7 @@ bool Connector::Connector_SCP_Pipe_Front_and_Valve_Outlet(double t_target,
 	// (2) ro*Apipe*v=valve_mass_flow
 
 	if (DEBUG)
-		cout << endl << endl << "Connector::Connector_SCP_Pipe_Back_and_Valve: entering DEBUG mode" << endl;
+		cout << endl << endl << "Connector::Connector_SCP_Pipe_Front_and_Valve: entering DEBUG mode" << endl;
 
 	bool update_OK = true;
 
@@ -1180,7 +1323,6 @@ bool Connector::Connector_SCP_Pipe_Front_and_Valve_Outlet(double t_target,
 		//err1 = (beta - (p - rho * a * v)) / 1.e5;
 		//err2 = rho * v * Apipe - (v1->Get_MassFlowRate_InCompressible(p_upstream, p, rho, x));
 
-		// Newton (this is faaar quicker)
 		mp = v1->Get_MassFlowRate(p_upstream, 293., p, 293., x);
 		v = mp / rho / Apipe;
 		f = p - (beta + rho * a * v);
@@ -1208,6 +1350,7 @@ bool Connector::Connector_SCP_Pipe_Front_and_Valve_Outlet(double t_target,
 			printf("\n (back) iter #%2d: beta=%5.3e, p=%5.3e, v=%5.3e, err=%+5.3e",
 			       iter, beta, p, v, err);
 			update_OK = false;
+			//cin.get();
 		}
 	}
 
@@ -1246,12 +1389,21 @@ void Connector::Connector_SCP_Reservoir_and_Pipe_Front(double t_target,
 	int iter = 0, MAX_ITER = 50;
 	while (fabs(err) > TOL) {
 		v = (p - beta) / rho / a; // "Corrector"
-		p = pt - IPD_mul * rho / 2 * v * v;
-		err1 = pt - (p + IPD_mul * rho * v * v / 2.);
+		if (v > 0.) {
+			p = pt - IPD_mul * rho / 2. * v * v;
+			err1 = pt - (p + IPD_mul * rho * v * v / 2.);
+		} else {
+			p = pt;
+			err1 = 0.0;
+		}
+
 		err2 = (p - rho * a * v - beta) / 1.e5;
 		err = sqrt(err1 * err1 + err2 * err2);
 
-		//printf("\n (front) iter #%2d: pt=%5.3e, rhot=%5.3e, beta=%5.3e, p=%5.3e, T=%5.3e, rho=%5.3e, v=%5.3e, err1=%5.3e, err2=%5.3e, err3=%5.3e", iter,pt,rhot,beta,p,T,rho,v,err1,err2,err3);
+		if (DEBUG)
+			printf(
+				"\n (front) iter #%2d: pt=%5.3e, rhot=%5.3e, beta=%5.3e, p=%5.3e, v=%5.3e, err1=%+5.3e, err2=%+5.3e",
+				iter, pt, rho, beta, p, v, err1, err2);
 
 		iter++;
 		if (iter == MAX_ITER) {
@@ -1263,6 +1415,7 @@ void Connector::Connector_SCP_Reservoir_and_Pipe_Front(double t_target,
 	}
 	//cin.get();
 }
+
 
 void Connector::Connector_SCP_Pipe_Simple_BC(double t_target) {
 	if (is_front1) {

@@ -99,9 +99,18 @@ public:
                                                 double &pf);
 
     bool Connector_SCP_Pipe_Back_and_Valve(double t_target,
-                                                  SCP *p1, Valve *v1, double p_downstream, double rho, double a,
-                                                  double &p);
+                                           SCP *p1, Valve *v1, double p_downstream, double rho, double a,
+                                           double &p);
 
+    bool Connector_SCP_Pipe_Back_Pipe_Front_and_Valve(double t_target,
+                                                      SCP *p1, SCP *p2, Valve *v1, double p_downstream, double rho,
+                                                      double a,
+                                                      double &p);
+
+    bool Connector_SCP_Pipe_Back_Pipe_Back_and_Valve(double t_target,
+                                                     SCP *p1, SCP *p2, Valve *v1, double p_downstream, double rho,
+                                                     double a,
+                                                     double &p);
 
     bool Connector_SCP_Pipe_Front_and_Valve_Outlet(double t_target,
                                                    SCP *p, Valve *v, double p_upstream, double rho, double a,

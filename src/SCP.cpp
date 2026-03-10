@@ -506,21 +506,62 @@ void SCP::Set_string_prop(string prop_string, string val) {
 }
 
 
-void SCP::UpdateInternal(double dummy_t_target) {
-  double a, b;
-  for (int i = 1; i < Npts - 1; i++) {
-    a = (p(i - 1) + roa * v(i - 1)) + dt * roa * Source(i - 1); //
-    b = (p(i + 1) - roa * v(i + 1)) - dt * roa * Source(i + 1);
-    pnew(i) = (a + b) / 2.;
-    vnew(i) = (a - b) / 2. / roa;
-    //cout << "v=" << vnew(i) << "(" << a << "," << b <<")" << "\n";
-    //cout << ": pnew = " << pnew(i) << "\t vnew = " << vnew(i);
+void SCP::UpdateInternal(double t_target) {
+  // Fractional MOC update: advance from current time t to t_target where
+  // t <= t_target <= t + dt (dt = dx/a). For delta_t < dt, the characteristic
+  // foot lies between grid points, so we linearly interpolate p, v, and Source.
+  double delta_t = t_target - t;
+  double TOL = dt / 1000.;
+
+  if (delta_t < 0) {
+    if (fabs(delta_t) < TOL)
+      delta_t = 0.;
+    else {
+      cout << endl
+          << "ERROR! SCP::UpdateInternal(), delta_t = " << delta_t << " < 0 ! (TOL=" << TOL << ")" << endl;
+      cout << endl << "Name of pipe: " << name << endl;
+      cout << endl << "t_target = " << t_target;
+      cout << endl << "t (pipe) = " << t;
+      cin.get();
+      return;
+    }
   }
-  return;
+
+  if (delta_t > dt) {
+    if (delta_t - TOL < dt)
+      delta_t = dt;
+    else {
+      cout << endl
+          << "ERROR! SCP::UpdateInternal(), delta_t = " << delta_t << " > dt= " << dt << endl;
+      cout << endl << "Name of pipe: " << name << endl;
+      cout << Info();
+      cin.get();
+      return;
+    }
+  }
+
+  double r = (dt > 0.) ? (delta_t / dt) : 0.; // r in [0,1]
+
+  for (int i = 1; i < Npts - 1; i++) {
+    // C+ characteristic arriving at i: foot between i and i-1
+    double p_plus = p(i) * (1. - r) + p(i - 1) * r;
+    double v_plus = v(i) * (1. - r) + v(i - 1) * r;
+    double s_plus = Source(i) * (1. - r) + Source(i - 1) * r;
+
+    // C- characteristic arriving at i: foot between i and i+1
+    double p_minus = p(i) * (1. - r) + p(i + 1) * r;
+    double v_minus = v(i) * (1. - r) + v(i + 1) * r;
+    double s_minus = Source(i) * (1. - r) + Source(i + 1) * r;
+
+    double a_char = (p_plus + roa * v_plus) + delta_t * roa * s_plus;
+    double b_char = (p_minus - roa * v_minus) - delta_t * roa * s_minus;
+
+    pnew(i) = (a_char + b_char) / 2.;
+    vnew(i) = (a_char - b_char) / 2. / roa;
+  }
 }
 
 void SCP::UpdateTime(double _t) {
- 
   for (int i = 0; i < Npts; i++) {
     p(i) = pnew(i);
     v(i) = vnew(i);
@@ -541,15 +582,16 @@ void SCP::UpdateTime(double _t) {
 void SCP::Step(
   string BC_start_type, double BC_start_val,
   string BC_end_type, double BC_end_val) {
-  double dummy_t_target = 0.;
+  double t_target = t + dt;
 
-  UpdateInternal(dummy_t_target);
+  UpdateInternal(t_target);
 
-  BCLeft(BC_start_type, BC_start_val, pnew(0), vnew(0));
+  BCLeft(t_target, BC_start_type, BC_start_val, pnew(0), vnew(0));
 
-  BCRight(BC_end_type, BC_end_val, pnew(Npts - 1), vnew(Npts - 1));
+  BCRight(t_target, BC_end_type, BC_end_val, pnew(Npts - 1), vnew(Npts - 1));
 
-  //	t += dt;
+  // time is advanced by UpdateTime(t_target) outside (network solver),
+  // or can be advanced by calling UpdateTime(t + dt) after Step().
 }
 
 void SCP::Save_data() {
@@ -562,7 +604,6 @@ void SCP::Save_data() {
   tmpvec.at(6) = v(Npts - 1) * A * 3600.;
 
   data.push_back(tmpvec);
-  //  cout<<endl<<name<<": tmpvec.size()="<<tmpvec.size();
 }
 
 /*! \brief Left side bounbdary condition.
@@ -573,9 +614,48 @@ void SCP::Save_data() {
   \param pp [out] The pressure at the left side. Modified in place.
   \param vv [out] The velocity at the left side. Modified in place.
   */
-void SCP::BCLeft(string type, double val, double &pp, double &vv) {
-  // pp - roa*vv = b
-  double beta = (p(1) - roa * v(1)) - dt * roa * Source(1); //Constant value
+void SCP::BCLeft(double t_target, string type, double val, double &pp, double &vv) {
+  // Left boundary: incoming C- characteristic invariant (beta)
+  // beta = p - roa*v evaluated at characteristic foot, minus source contribution.
+
+  double delta_t = t_target - t;
+  double TOL = dt / 1000.;
+
+  if (delta_t < 0) {
+    if (fabs(delta_t) < TOL)
+      delta_t = 0.;
+    else {
+      cout << endl
+          << "ERROR! SCP::BCLeft(), delta_t = " << delta_t << " < 0 ! (TOL=" << TOL << ")" << endl;
+      cout << endl << "Name of pipe: " << name << endl;
+      cout << endl << "t_target = " << t_target;
+      cout << endl << "t (pipe) = " << t;
+      cin.get();
+      return;
+    }
+  }
+
+  if (delta_t > dt) {
+    if (delta_t - TOL < dt)
+      delta_t = dt;
+    else {
+      cout << endl
+          << "ERROR! SCP::BCLeft(), delta_t = " << delta_t << " > dt= " << dt << endl;
+      cout << endl << "Name of pipe: " << name << endl;
+      cout << Info();
+      cin.get();
+      return;
+    }
+  }
+
+  double r = (dt > 0.) ? (delta_t / dt) : 0.; // r in [0,1]
+
+  // For delta_t < dt, the foot is between node 0 and 1.
+  double p_foot = p(0) * (1. - r) + p(1) * r;
+  double v_foot = v(0) * (1. - r) + v(1) * r;
+  double s_foot = Source(0) * (1. - r) + Source(1) * r;
+
+  double beta = (p_foot - roa * v_foot) - delta_t * roa * s_foot;
 
   if (type == "Pressure") {
     pp = val;
@@ -585,8 +665,8 @@ void SCP::BCLeft(string type, double val, double &pp, double &vv) {
     pp = beta + vv * roa;
   } else if (type == "NR") {
     double alpha = val;
-    pp = (alpha + beta) / 2;
-    vv = (alpha - beta) / 2 / roa;
+    pp = (alpha + beta) / 2.;
+    vv = (alpha - beta) / 2. / roa;
   } else {
     cout << endl
         << "ERROR! SCP::BCLeft(), unknown BC type: " << type << endl
@@ -597,19 +677,19 @@ void SCP::BCLeft(string type, double val, double &pp, double &vv) {
 
   if (DEBUG) {
     cout << endl << "SCP::BCLeft():";
-    cout << endl << "\t Edge " << name << " BC set up:";
-    cout << endl << "\t p = " << pp << " Pa";
-    cout << endl << "\t v = " << vv << " m/s";
-    cout << endl << "\t Q = " << vv * A << " m3/s = " << vv * A * 3600 << "m3/h" << endl;
+    cout << endl << "	 Edge " << name << " BC set up:";
+    cout << endl << "	 p = " << pp << " Pa";
+    cout << endl << "	 v = " << vv << " m/s";
+    cout << endl << "	 Q = " << vv * A << " m3/s = " << vv * A * 3600 << "m3/h" << endl;
   }
 }
 
-void SCP::Set_BC_Left(string type, double val) {
-  BCLeft(type, val, pnew(0), vnew(0));
+void SCP::Set_BC_Left(double t_target, string type, double val) {
+  BCLeft(t_target, type, val, pnew(0), vnew(0));
 }
 
-void SCP::Set_BC_Right(string type, double val) {
-  BCRight(type, val, pnew(Npts - 1), vnew(Npts - 1));
+void SCP::Set_BC_Right(double t_target, string type, double val) {
+  BCRight(t_target, type, val, pnew(Npts - 1), vnew(Npts - 1));
 }
 
 /*! \brief Right side boundary condition.
@@ -620,27 +700,61 @@ void SCP::Set_BC_Right(string type, double val) {
   \param pp [out] The pressure at the right side. Modified in place.
   \param vv [out] The velocity at the right side. Modified in place.
   */
-void SCP::BCRight(string type, double val, double &pp, double &vv) {
-  // pp + roa*vv = alpha
-  double alpha = (p(Npts - 2) + roa * v(Npts - 2)) + dt * roa * Source(Npts - 2);
+void SCP::BCRight(double t_target, string type, double val, double &pp, double &vv) {
+  // Right boundary: incoming C+ characteristic invariant (alpha)
+  // alpha = p + roa*v evaluated at characteristic foot, plus source contribution.
+
+  double delta_t = t_target - t;
+  double TOL = dt / 1000.;
+
+  if (delta_t < 0) {
+    if (fabs(delta_t) < TOL)
+      delta_t = 0.;
+    else {
+      cout << endl
+          << "ERROR! SCP::BCRight(), delta_t = " << delta_t << " < 0 ! (TOL=" << TOL << ")" << endl;
+      cout << endl << "Name of pipe: " << name << endl;
+      cout << endl << "t_target = " << t_target;
+      cout << endl << "t (pipe) = " << t;
+      cin.get();
+      return;
+    }
+  }
+
+  if (delta_t > dt) {
+    if (delta_t - TOL < dt)
+      delta_t = dt;
+    else {
+      cout << endl
+          << "ERROR! SCP::BCRight(), delta_t = " << delta_t << " > dt= " << dt << endl;
+      cout << endl << "Name of pipe: " << name << endl;
+      cout << Info();
+      cin.get();
+      return;
+    }
+  }
+
+  double r = (dt > 0.) ? (delta_t / dt) : 0.; // r in [0,1]
+
+  // For delta_t < dt, the foot is between node Npts-1 and Npts-2.
+  double p_foot = p(Npts - 1) * (1. - r) + p(Npts - 2) * r;
+  double v_foot = v(Npts - 1) * (1. - r) + v(Npts - 2) * r;
+  double s_foot = Source(Npts - 1) * (1. - r) + Source(Npts - 2) * r;
+
+  double alpha = (p_foot + roa * v_foot) + delta_t * roa * s_foot;
 
   if (type == "Pressure") {
     pp = val;
     vv = (alpha - pp) / roa;
-    //cout<<endl<<"name:"<<name<<", alpha="<<alpha<<", pp="<<pp<<", vv="<<vv<<", v(end-2)="<<v(Npts-2)<<", p(end-2)"<<p(Npts-2);
   } else if (type == "Velocity") {
     vv = val;
-    // double a = (p(Npts - 2) + roa * v(Npts - 2)) + dt * roa * Source(Npts - 2);
     pp = alpha - vv * roa;
   } else if (type == "NR") {
     double beta = val;
-    pp = (alpha + beta) / 2;
-    vv = (alpha - beta) / 2 / roa;
+    pp = (alpha + beta) / 2.;
+    vv = (alpha - beta) / 2. / roa;
   } else if (type == "Valve") {
     double mul = val;
-    //		double pend = p(Npts - 1);
-    //		double vend = v(Npts - 1);
-    // double alpha = (p(Npts - 2) + roa * v(Npts - 2)) + dt * roa * Source(Npts - 2);
 
     double a_ = ro * ro * A * A;
     double b_ = mul * mul * 2. * ro * roa;
@@ -663,10 +777,10 @@ void SCP::BCRight(string type, double val, double &pp, double &vv) {
 
   if (DEBUG) {
     cout << endl << "SCP::BCRight():";
-    cout << endl << "\t Edge " << name << " BC set up:";
-    cout << endl << "\t p = " << pp << " Pa";
-    cout << endl << "\t v = " << vv << " m/s";
-    cout << endl << "\t Q = " << vv * A << " m3/s" << endl;
+    cout << endl << "	 Edge " << name << " BC set up:";
+    cout << endl << "	 p = " << pp << " Pa";
+    cout << endl << "	 v = " << vv << " m/s";
+    cout << endl << "	 Q = " << vv * A << " m3/s" << endl;
   }
 }
 
@@ -796,25 +910,19 @@ double SCP::Source(int i) {
 
   bool is_lambda_model_set = false;
 
-  if (lambda_model == "darcy_lambda") // Darcy
-  {
-    source_l = -lambda_p_2D * v(i) * abs(v(i));
+  if (lambda_model == "darcy_lambda") {
+    source_l = -lambda_p_2D * v(i) * fabs(v(i));
     is_lambda_model_set = true;
   }
-  if (lambda_model == "hw") //Hazen-Williams
-  {
+
+  if (lambda_model == "hw") {
     double Q = fabs(v(i)) * A;
-    //double Dx = L/(Npts-1);
-    //cout << "lambda = " << lambda << "\t";
-
     double hL = 10.67 * pow(Q / lambda, 1.852) * pow(D, -4.8704);
-
     double sign;
     if (v(i) > 0)
       sign = 1.;
     else
       sign = -1.;
-
 
     source_l = -sign * g * hL;
     is_lambda_model_set = true;
@@ -825,9 +933,8 @@ double SCP::Source(int i) {
     cout << endl << "   valid options: darcy_lambda | hw" << endl;
     exit(-1);
   }
-  //cout<<endl<<"source_l="<<source_l<<", other:"<<- lambda_p_2D * v(i) * abs(v(i));
-  lambda_p_2D = lambda / 2. / D;
-  source_l = -lambda_p_2D * v(i) * abs(v(i));
+  //cout << endl << lambda_model << ", source_l=" << source_l << ", source_g:" << source_g << endl;
+
   return source_g + source_l;
 }
 
@@ -849,12 +956,12 @@ void SCP::Write_data(string folder) {
     FILE *pFile;
     pFile = fopen((folder + "/" + fname).c_str(), "w");
     fprintf(pFile, "t (s); p(0) (bar); p(L) (bar); v(0) m/s; v(L) (m/s); Q(0) (m3/h), Q(L) (m3/h), L, D, lambda\n");
-    for (int i = 0; i < data.size(); i++)
+    for (auto &i: data)
       fprintf(pFile, "%8.6e; %8.6e; %8.6e; %8.6e; %8.6e; %8.6e; %8.6e; %8.6e; %8.6e; %8.6e\n",
-              data.at(i).at(0),
-              data.at(i).at(1) / 1.e5, data.at(i).at(2) / 1.e5,
-              data.at(i).at(3), data.at(i).at(4),
-              data.at(i).at(5), data.at(i).at(6),
+              i.at(0),
+              i.at(1) / 1.e5, i.at(2) / 1.e5,
+              i.at(3), i.at(4),
+              i.at(5), i.at(6),
               L, D, lambda);
     fclose(pFile);
     cout << " done. ";
